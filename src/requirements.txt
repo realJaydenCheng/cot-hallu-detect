@@ -1,0 +1,9 @@
+torch == 2.4.0+cu118
+transformers == 4.46.2
+accelerate
+datasets
+pandas
+debugpy
+sentencepiece
+vllm == 0.6.1.post1+cu118
+clize
