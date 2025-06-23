@@ -3,6 +3,7 @@ from dataclasses import dataclass
 import torch
 import torch.nn.functional as F
 from torch import Tensor
+import numpy as np
 
 from utils import time_performance_decorator
 from detect_methods.perplexity import calcu_perplexity
@@ -39,6 +40,10 @@ def vocab_entropies_from_src(
         validate_args=False,
     ).entropy()
 
+    # TODO[jayden]: apply mask
+    # if mask is not None:
+    #     index_no_top = torch.argwhere(mask)
+
     return vocab_entropies
 
 
@@ -58,6 +63,8 @@ def entropy_fixed_probs(
 
     return probs: batch_size, tgt_seq_len
     """
+    tgt_logits = tgt_logits.to(device=entropies.device)
+    tgt_tokens = tgt_tokens.to(device=entropies.device)
     if alpha <= 1:
         out_logits = tgt_logits + alpha * (-entropies.unsqueeze(1))
     else:
@@ -83,7 +90,6 @@ class EntropyShapnessOutput:
         )
         if ppl != ppl or ppl == float('inf'):  # nan or inf
             print(f"WARNING! perplexity: {ppl}")
-            print(self.probs)
             return None
         return ppl
 
@@ -102,12 +108,19 @@ def calcu_sharpnesses_for_one_layer(
     embd_to_id_layer: torch.nn.Linear,
     alpha=1.,
 ):
-    entropies_vocab = vocab_entropies_from_src(
+
+    tgt_logits = tgt_logits.to(device=src_hidden_state.device)
+    tgt_tokens = tgt_tokens.to(device=src_hidden_state.device)
+
+    entropies_vocab: Tensor = vocab_entropies_from_src(
         src_hidden_state, embd_to_id_layer,
     )
-    probs = entropy_fixed_probs(
+    probs: Tensor = entropy_fixed_probs(
         entropies_vocab, tgt_tokens, tgt_logits, alpha,
     )
+
+    entropies_vocab = entropies_vocab.to(device=src_hidden_state.device)
+    probs = probs.to(device=src_hidden_state.device)
 
     entropies = (
         entropies_vocab.unsqueeze(1)
@@ -120,7 +133,6 @@ def calcu_sharpnesses_for_one_layer(
         entropies=entropies[0].to("cpu").numpy().tolist(),
         probs=probs[0].to("cpu").numpy().tolist(),
     )
-
 
 @time_performance_decorator(enable=False)
 @torch.no_grad()

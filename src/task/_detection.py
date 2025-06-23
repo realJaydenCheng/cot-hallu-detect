@@ -1,17 +1,17 @@
 
 from typing import Literal
+import gc
 
 import torch
-from transformers import (
-    PreTrainedTokenizerBase,
-    PreTrainedModel,
-    DebertaV2ForSequenceClassification,
-    DebertaV2Tokenizer,
-)
+from transformers import PreTrainedTokenizerBase
+from transformers import PreTrainedModel
+from transformers import DebertaV2ForSequenceClassification
+from transformers import DebertaV2Tokenizer
 from transformers.modeling_outputs import CausalLMOutputWithPast
 
 from detect_methods import *
 from utils import time_performance_decorator
+
 
 def split_prompt_to_ids(
     msg: list[dict[str, str]],
@@ -20,7 +20,16 @@ def split_prompt_to_ids(
 ):
     prompt_ids = tokenizer.apply_chat_template(msg)
 
-    if "llama" in llm.config.name_or_path.lower():
+    if "r1" in llm.config.name_or_path.lower():  # must before llama
+        I = 128014
+        prompt_str = tokenizer.apply_chat_template(msg, tokenize=False)
+        prompt_str = (
+            prompt_str
+            .replace("<--think-->", "<think>")
+            .replace("<--/think-->", "</think>")
+        )
+        prompt_ids = tokenizer.encode(prompt_str)
+    elif "llama" in llm.config.name_or_path.lower():
         I = 128007
     elif "mistral" in llm.config.name_or_path.lower():
         I = 4
@@ -143,6 +152,57 @@ def build_msg_fot_base_detect(
     return msg
 
 
+def build_msg_for_r1_detect(
+    question: str, thought: str, answer: str,
+):
+    prompt = "Think about it step by step, then answer the question: {}"
+    msg = [
+        {
+            "role": "user",
+            "content": prompt.format(question),
+        },
+        {
+            "role": "assistant",
+            "content": "<--think-->\n" + thought + "\n<--/think-->\n\n" + answer
+        }
+    ]
+    return msg
+
+
+def build_msg_for_r1_detect_ltm(
+    question: str, thought: str, answer: str,
+):
+    prompt = "Think about the question with subproblems must be solved before answering and answer it directly: {}"
+    msg = [
+        {
+            "role": "user",
+            "content": prompt.format(question),
+        },
+        {
+            "role": "assistant",
+            "content": "<--think-->\n" + thought + "\n<--/think-->\n\n" + answer
+        }
+    ]
+    return msg
+
+
+def build_msg_for_r1_detect_mrpp(
+    question: str, thought: str, answer: str,
+):
+    prompt = "Think about the question with each step carrying out as many basic operations as possible and answer it directly: {}"
+    msg = [
+        {
+            "role": "user",
+            "content": prompt.format(question),
+        },
+        {
+            "role": "assistant",
+            "content": "<--think-->\n" + thought + "\n<--/think-->\n\n" + answer
+        }
+    ]
+    return msg
+
+
 def build_msg_for_cot_detect(
     question: str, thought: str, answer: str,
     method: Literal["sbs", "mrpp", "ltm"],
@@ -209,36 +269,61 @@ def detect(
         )
 
     need_stat_keys = [
-        "perplexity",
-        "entropies_perplexity",
+        "perplexity", "likelihood",
+        "entropies_avg", "entropies_perplexity",
         "attn_score", "hidden_score",
     ]
     state: LlmConditionalOutput | None = None
 
     if any((key not in score) for key in need_stat_keys):
-        all_ids, a_ids = split_prompt_to_ids(
-            build_msg_fot_base_detect(
-                question, answer, build_msg_for_directly_answer
-            ) if method == "base"
-            else build_msg_for_cot_detect(
-                question, thought, answer, method,
-                build_msg_for_thought,
-                build_msg_for_answer,
-            ),
-            llm, tokenizer,
-        )
+
+        if  method == "base" and "r1" in llm.config.name_or_path.lower():
+            all_ids, a_ids = split_prompt_to_ids(
+                build_msg_for_r1_detect(question, thought, answer),
+                llm, tokenizer
+            )
+        elif method == "ltm" and "r1" in llm.config.name_or_path.lower():
+            all_ids, a_ids = split_prompt_to_ids(
+                build_msg_for_r1_detect_ltm(question, thought, answer),
+                llm, tokenizer
+            )
+        elif method == "mrpp" and "r1" in llm.config.name_or_path.lower():
+            all_ids, a_ids = split_prompt_to_ids(
+                build_msg_for_r1_detect_mrpp(question, thought, answer),
+                llm, tokenizer
+            )
+        elif method == "base":
+            all_ids, a_ids = split_prompt_to_ids(
+                build_msg_fot_base_detect(
+                    question, answer, build_msg_for_directly_answer
+                ),
+                llm, tokenizer,
+            )
+        else:  # sbs, mrpp, ltm
+            all_ids, a_ids = split_prompt_to_ids(
+                build_msg_for_cot_detect(
+                    question, thought, answer, method,
+                    build_msg_for_thought,
+                    build_msg_for_answer,
+                ),
+                llm, tokenizer,
+            )
         state = get_tokens_llm_state(all_ids, a_ids, llm)
 
     if "perplexity" not in score:
         score["perplexity"] = calcu_perplexity(state.answer_token_probs)
-
-    if "entropies_perplexity" not in score:
+    if "likelihood" not in score:
+        score["likelihood"] = state.answer_liklihood
+    if any(
+        (key not in score) for key in
+        ("entropies_avg", "entropies_perplexity")
+    ):
         layers = [
             state.question_with_thought_hidden_states[i]
             for i in sharpness_layers
         ]
-        score["entropies_perplexity"] = [
-            layer_output.perplexity
+        entropies_avg_pplx = [
+            (layer_output.entropy_avg, layer_output.perplexity)
             for layer_output in calcu_sharpnesses_for_layers(
                 layers,
                 state.answer_token_ids,
@@ -246,6 +331,10 @@ def detect(
                 llm.lm_head,
                 sharpness_alpha,
             )
+        ]
+        score["entropies_avg"] = [ap[0] for ap in entropies_avg_pplx]
+        score["entropies_perplexity"] = [
+            ap[1]for ap in entropies_avg_pplx
         ]
     if "attn_score" not in score:
         score["attn_score"] = calcu_layers_attn_scores(
@@ -258,6 +347,8 @@ def detect(
             hidden_score_layers,
         )
 
-    del state
+    if 'state' in locals():
+        del state
+        torch.cuda.empty_cache()
+        gc.collect()
     return score
-

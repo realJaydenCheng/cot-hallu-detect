@@ -5,5 +5,4 @@ python -m task.mcqa \
 -S 0 \
 -L 0 \
 -b 4 \
---gpu 7 \
--r 0.6
+-r 0.4

@@ -8,5 +8,4 @@ python -m task.qa \
 -S 0 \
 -L 0 \
 -b 4 \
---gpu 0 \
--r 0.6
+-r 0.4

@@ -16,9 +16,9 @@ from task.qa import QaSample
 def load_truth_info_models_and_tokenizer(
     truth_model_path: str,
     info_model_path: str,
-    device="cuda"
+    device="auto"
 ):
-    tokenizer = transformers.LlamaTokenizerFast.from_pretrained(
+    tokenizer = transformers.AutoTokenizer.from_pretrained(
         truth_model_path
     )
     truth_model = peft.AutoPeftModelForCausalLM.from_pretrained(
@@ -120,14 +120,11 @@ def main(
     data_start_index: 'S' = 0,  # type: ignore
     data_read_length: 'L' = 0,  # type: ignore
     data_batch_size: 'b' = 128,  # type: ignore
-    gpu_id0: 'gpu0' = "0",  # type: ignore
-    gpu_id1: 'gpu1' = "1",  # type: ignore
     gpu_mem_util: 'r' = 0.5,  # type: ignore
     truth_model_path: 'truth' = "",  # type: ignore
     info_model_path: 'info' = "",  # type: ignore
 ):
 
-    os.environ["CUDA_VISIBLE_DEVICES"] = f"{gpu_id0},{gpu_id1}"
     table = "evaled"
 
     db = init_database(
@@ -138,22 +135,23 @@ def main(
     )
 
     truth_model, info_model, tokenizer = load_truth_info_models_and_tokenizer(
-        truth_model_path, info_model_path, device="cuda:1"
+        truth_model_path, info_model_path, device="auto"
     )
     llm = LLM(
         model=model_name_or_path,
         gpu_memory_utilization=gpu_mem_util,
-        device="cuda:0",
+        tensor_parallel_size=torch.cuda.device_count()
     )
     model, tokenizer = load_model_and_tokenizer(
-        model_name_or_path, "cuda:0"
+        model_name_or_path, "auto"
     )
     nli_model, nli_tokenizer = load_nli_model_and_tokenizer(
-        nli_name_or_path, "cuda:0"
+        nli_name_or_path, "cuda:7"
     )
     embd_model, embd_tokenizer = load_embd_model_and_tokenizer(
-        embd_name_or_path, "cuda:0"
+        embd_name_or_path, "auto"
     )
+
     dataset = load_hf_dataset(
         data_name_or_path,
         data_start_index, data_read_length,
@@ -178,9 +176,14 @@ def main(
             thoughts, msgs_for_a, answers = generate_samples(
                 batch, cot_method, llm, tokenizer, data_name_or_path
             )
-            eigen_score_samples, self_check_samples = stochastically_generate_samples(
-                msgs_for_a, llm, tokenizer
-            )
+            if "r1" in llm.llm_engine.model_config.served_model_name.lower():
+                eigen_score_samples, self_check_samples = stochastically_generate_samples_r1(
+                    msgs_for_a, llm, tokenizer
+                )
+            else:
+                eigen_score_samples, self_check_samples = stochastically_generate_samples(
+                    msgs_for_a, llm, tokenizer
+                )
 
             # evaluation
             for j, sample in enumerate(batch):
@@ -235,10 +238,8 @@ def main(
                     truth_model, info_model,
                     tokenizer,
                 )
-                records.append((
-                    _id, t_score, i_score, cot_method, json.dumps(score)
-                ))
-
+                r = (_id, t_score, i_score, cot_method, json.dumps(score))
+                records.append(r)
             insert_records(records, db)
             records = []
 

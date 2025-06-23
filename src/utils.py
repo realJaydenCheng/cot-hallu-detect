@@ -19,40 +19,40 @@ from transformers import (
 )
 
 
-NLI_TOKENIZER: DebertaV2Tokenizer = None
+NLI_TOKENIZER: DebertaV2Tokenizer|None = None
 NLI_MODEL: DebertaV2ForSequenceClassification = None
 
 
 def load_nli_model_and_tokenizer(
     nli_model_path="potsawee/deberta-v3-large-mnli",
-    device="cuda",
+    device="auto",
 ) -> tuple[DebertaV2ForSequenceClassification, DebertaV2Tokenizer]:
     global NLI_TOKENIZER, NLI_MODEL
     if NLI_TOKENIZER is not None and NLI_MODEL is not None:
         return NLI_TOKENIZER, NLI_MODEL
     NLI_TOKENIZER = DebertaV2Tokenizer.from_pretrained(
-        nli_model_path, device=device)
+        nli_model_path, device="cuda")
     NLI_MODEL = DebertaV2ForSequenceClassification.from_pretrained(
-        nli_model_path
-    ).to(device)
+        nli_model_path, device_map=device
+    )
     NLI_MODEL.eval()
     return NLI_MODEL, NLI_TOKENIZER
 
 
-EMBD_TOKENIZER: RobertaTokenizer = None
+EMBD_TOKENIZER: RobertaTokenizer|None = None
 EMBD_MODEL: RobertaModel = None
 
 
 def load_embd_model_and_tokenizer(
     embd_model_path="sentence-transformers/nli-roberta-large",
-    device="cuda",
+    device="auto",
 ) -> tuple[RobertaModel, RobertaTokenizer]:
     global EMBD_TOKENIZER, EMBD_MODEL
     if EMBD_TOKENIZER is not None and EMBD_MODEL is not None:
         return EMBD_TOKENIZER, EMBD_MODEL
     EMBD_TOKENIZER = RobertaTokenizer.from_pretrained(
-        embd_model_path, device=device)
-    EMBD_MODEL = RobertaModel.from_pretrained(embd_model_path).to(device)
+        embd_model_path, device="cuda")
+    EMBD_MODEL = RobertaModel.from_pretrained(embd_model_path, device_map=device)
     EMBD_MODEL.eval()
     return EMBD_MODEL, EMBD_TOKENIZER
 
@@ -124,7 +124,7 @@ class TimePerformanceContext:
 
 def load_model_and_tokenizer(
     model_path: str,
-    device: str = "cuda",
+    device: str = "auto",
 ) -> tuple[PreTrainedModel, PreTrainedTokenizerBase]:
     tokenizer: PreTrainedTokenizerBase = AutoTokenizer.from_pretrained(
         model_path,

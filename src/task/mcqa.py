@@ -83,6 +83,24 @@ class MultipleChoiceSampleData:
         ]
         return msg
 
+    @property
+    def prompt_r1(self):
+        labels_text = ', '.join(x.label for x in self.choices)
+        mcq_prompt = "The following is a multiple-choice question. " + \
+            "Please choose the most suitable one among " + \
+            labels_text + " as the answer to this question.\n Q: "
+        return mcq_prompt
+
+    @property
+    def msg_for_directly_answer_r1(self):
+        content = "Answer this question.\n Question: " + \
+            f"{self.question}\n{self.choices_str}"
+        msg = [
+            {"role": "user", "content": content},
+            {"role": "assistant", "content": "<--think-->\n\n<--/think-->"}
+        ]
+        return msg
+
     def msg_for_thought(
         self,
         method: Literal["sbs", "mrpp", "ltm"],
@@ -100,6 +118,35 @@ class MultipleChoiceSampleData:
         msg = [
             {"role": "system", "content": "You are a helpful assistant."},
             {"role": "user", "content": cot + q},
+        ]
+        return msg
+
+    def msg_for_thought_r1(
+        self, method: str = "sbs"
+    ):
+        if method == "sbs":
+            cot = "Think about the question step by step and answer it. \n"
+        elif method == "mrpp":
+            cot = "Think about the question with each step carrying out as many basic operations as possible and answer it. \n"
+        elif method == "ltm":
+            cot = "Think about the question with subproblems must be solved before answering and answer it. \n"
+
+        q = "Question:\n" + f"{self.question}\n{self.choices_str}"
+
+        msg = [
+            {"role": "user", "content": cot + q},
+        ]
+        return msg
+
+    def content_for_answer_with_thought_r1(self,):
+        cot = "Think about the question step by step and answer it. \n"
+        q = "Question:\n" + f"{self.question}\n{self.choices_str}"
+        return cot + q
+
+    def msg_for_answer_r1(self, thoght_msg: list[dict[str, str]], thought: str):
+        msg = [
+            *thoght_msg,
+            {"role": "assistant", "content": f"<--think-->\n{thought}\n<--/think-->"},
         ]
         return msg
 
@@ -161,14 +208,21 @@ class MultipleChoiceSampleData:
                 continue
             changed = True
 
-            if method == "base":
-                msg = self.msg_for_directly_answer
+            if "r1" in llm.config.name_or_path.lower():
+                if method == "base":
+                    msg = self.msg_for_directly_answer_r1
+                else:
+                    thought = generated[method]
+                    msg = self.msg_for_thought_r1(method)
             else:
-                thought = generated[method]
-                msg = self.msg_for_answer(
-                    self.msg_for_thought(method),
-                    thought, method,
-                )
+                if method == "base":
+                    msg = self.msg_for_directly_answer
+                else:
+                    thought = generated[method]
+                    msg = self.msg_for_answer(
+                        self.msg_for_thought(method),
+                        thought, method,
+                    )
 
             msg.append(
                 {"role": "assistant", "content": "The correct answer is"})
@@ -258,7 +312,6 @@ def main(
     data_start_index: 'S' = 0,  # type: ignore
     data_read_length: 'L' = 0,  # type: ignore
     data_batch_size: 'b' = 128,  # type: ignore
-    gpu_id: 'gpu' = "0",  # type: ignore
     gpu_mem_util: 'r' = 0.5,  # type: ignore
 ):
     """Main script to execute the Pilot Experiment.
@@ -272,18 +325,17 @@ def main(
     :param gpu_mem_util: Sets the desired GPU memory utilization rate for the model execution. This is a parameter specific to vllm.
     """
 
-    os.environ["CUDA_VISIBLE_DEVICES"] = gpu_id
-
     db = init_database(
         f"{model_name_or_path.split('/')[-1].split('-')[0]}." +
         f"{data_name_or_path.split('/')[-1]}." +
         f"{data_start_index}." +
         "sqlite3"
     )
-
+    print(torch.cuda.device_count())
     llm = LLM(
         model=model_name_or_path,
         gpu_memory_utilization=gpu_mem_util,
+        tensor_parallel_size=torch.cuda.device_count(),
     )
     model, tokenizer = load_model_and_tokenizer(model_name_or_path)
     dataset = load_hf_dataset(
@@ -294,7 +346,8 @@ def main(
     for i, batch in enumerate(dataset.iter(data_batch_size)):
         # generation
         print(
-            f"## Batch {i} / Samples {i*data_batch_size} / Total {len(dataset)}")
+            f"## Batch {i} / Samples {i*data_batch_size} / Total {len(dataset)}"
+        )
         batch = [dict(zip(batch.keys(), t)) for t in zip(*batch.values())]
         samples = [
             MultipleChoiceSampleData(

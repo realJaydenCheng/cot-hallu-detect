@@ -147,11 +147,9 @@ def main(
     data_read_length: 'L' = 0,  # type: ignore
     data_batch_size: 'b' = 128,  # type: ignore
     cot_method: "method" = "base",  # type: ignore
-    gpu_id: 'gpu' = "0",  # type: ignore
     gpu_mem_util: 'r' = 0.5,  # type: ignore
 ):
 
-    os.environ["CUDA_VISIBLE_DEVICES"] = gpu_id
     table = "evaled"
 
     db = init_database(
@@ -165,6 +163,7 @@ def main(
     llm = LLM(
         model=model_name_or_path,
         gpu_memory_utilization=gpu_mem_util,
+        tensor_parallel_size=torch.cuda.device_count(),
     )
     model, tokenizer = load_model_and_tokenizer(model_name_or_path)
     nli_model, nli_tokenizer = load_nli_model_and_tokenizer(nli_name_or_path)
@@ -186,16 +185,21 @@ def main(
     for i, batch in enumerate(dataset.iter(data_batch_size)):
         # generation
         print(
-            f"## Batch {i} / Samples {i*data_batch_size} / Total {len(dataset)}")
+            f"## Batch {i} / Samples {i*data_batch_size} / Total {len(dataset)}"
+        )
         batch = [dict(zip(batch.keys(), t)) for t in zip(*batch.values())]
 
         thoughts, msgs_for_a, answers = generate_samples(
             batch, cot_method, llm, tokenizer, data_name_or_path
         )
-        eigen_score_samples, self_check_samples = stochastically_generate_samples(
-            msgs_for_a, llm, tokenizer
-        )
-
+        if "r1" in llm.llm_engine.model_config.served_model_name.lower():
+            eigen_score_samples, self_check_samples = stochastically_generate_samples_r1(
+                msgs_for_a, llm, tokenizer
+            )
+        else:
+            eigen_score_samples, self_check_samples = stochastically_generate_samples(
+                msgs_for_a, llm, tokenizer
+            )
         # evaluation
         for j, sample in enumerate(batch):
             _id = i*data_batch_size + j + data_start_index
@@ -224,6 +228,7 @@ def main(
                 sharpness_alpha,
                 evaled
             )
+            
 
             score["eigen_score"] = score["eigen_score"][0] if isinstance(
                 score["eigen_score"], list) else score["eigen_score"]
